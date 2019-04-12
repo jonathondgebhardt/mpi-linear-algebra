@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+# Replace 'NODES', 'TASKS', and 'NAME' as appropriate for your use.
+# This is a revised version of a script written by Dr. John Nehrbass,
+# professor of CS4900 HPC & Parallel Computing.
+
+#SBATCH -N NODES 
+#SBATCH --tasks-per-node=TASKS
+#SBATCH --job-name=NAME
+#SBATCH --output=NAME.txt
+
+# First make sure all other modules are not loaded.
+module purge
+
+# Load the appropriate module. To see a list of available modules run:
+# module avail
+module load openmpi-2.0/gcc
+
+# Run on a single Node 
+mpirun --mca btl_tcp_if_include en0 --mca btl tcp,self -np NODES ./NAME.mpi
+

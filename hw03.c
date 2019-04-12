@@ -100,6 +100,7 @@ void showUsage(char* applicationName)
     printf("\t-d: n x n diagonal matrix where the values are the row numbers\n");
 }
 
+// https://thispointer.com/allocating-and-deallocating-2d-arrays-dynamically-in-c-and-c/
 int** createDiagonalMatrix(int dimension)
 {
     int** arr = (int**) malloc(dimension * sizeof(int*));

@@ -12,7 +12,7 @@
  *
  * Author: Jonathon Gebhardt
  * Class: CS4900-B90
- * Instructor: Dr. John Nerhbass
+ * Instructor: Dr. John Nehrbass
  * Assignment: Homework 3
  * GitHub: https://github.com/jonathondgebhardt/mpi-linear-algebra
  */

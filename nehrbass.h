@@ -5,7 +5,7 @@
  * made, mostly for coding style to improve readibility.
  *
  * Author: Jonathon Gebhardt
- * Author of original functions: Dr. John Nerhbass
+ * Author of original functions: Dr. John Nehrbass
  * Class: CS4900-B90
  */
 

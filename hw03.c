@@ -229,3 +229,4 @@ float** readMatrixFromFile(char* fileName)
 
     return arr;
 }
+

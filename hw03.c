@@ -1,3 +1,5 @@
+#include "nehrbass.h"
+
 #include <assert.h>
 #include <mpi.h>
 #include <stdio.h>
@@ -18,10 +20,13 @@
  */
 
 void showUsage(char*);
-float** createDiagonalMatrix(int);
-float** createRandomMatrix(int);
+void print2dMatrix(double**, int);
+void print1dMatrix(double*, int);
+double** createDiagonalMatrix(int);
+double** createRandomMatrix(int);
 int getDimensionFromFile(char*);
-float** readMatrixFromFile(char*);
+double** getMatrixFromFile(char*);
+double* createColumnMatrix(int);
 
 int main(int argc, char* argv[])
 {
@@ -82,8 +87,12 @@ int main(int argc, char* argv[])
 
     MPI_Barrier(MPI_COMM_WORLD);
 
+    // Seeding rand() isn't necessary for every case, but seed it here once to
+    // simplify logic.
+    srand(time(NULL));
+
     // Populate matrix based on user request.
-    float** matrix;
+    double** matrix;
     if (rFlag == 1)
     {
         matrix = createRandomMatrix(dimension);
@@ -94,20 +103,66 @@ int main(int argc, char* argv[])
     }
     else
     {
-        matrix = readMatrixFromFile(fileName);
-        if (matrix != NULL)
-        {
-            dimension = getDimensionFromFile(fileName);
-        }
-        else
+        matrix = getMatrixFromFile(fileName);
+        if (matrix == NULL)
         {
             fprintf(stderr, "Error reading from file\n");
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
             return 1;
         }
+
+        dimension = getDimensionFromFile(fileName);
     }
 
+    printf("\nThe given matrix is:\n");
+    print2dMatrix(matrix, dimension);
+
+    // If the determinant is 0, we can't do any meaningful work.
+    double det;
+    if ((det = determinantNehrbass(matrix, 0, dimension, dimension)) == 0)
+    {
+        printf("Determinant is zero, infinitely many solutions exist\n");
+    }
+    else
+    {
+        printf("\nDeterminant of the given matrix is:\n %7.2f\n", det);
+
+        double** cofactorMatrix = cofactor(matrix, dimension);
+        double** inverse = transpose(matrix, cofactorMatrix, dimension);
+
+        printf("\nInverse of the given matrix is:\n");
+        print2dMatrix(inverse, dimension);
+
+        // Generate a random 'x' to solve Ax = Y.
+        double* sampleX = createColumnMatrix(dimension);
+        printf("\nThe generated sampleX is:\n");
+        print1dMatrix(sampleX, dimension);
+
+        double* yMatrix = create1dDoubleMatrix(dimension);
+        int i;
+        for (i = 0; i < dimension; ++i)
+        {
+            yMatrix[i] = dot(matrix[i], sampleX, dimension);
+        }
+
+        printf("\nThe computed yMatrix is:\n");
+        print1dMatrix(yMatrix, dimension);
+
+        // Clean up.
+        free(sampleX);
+        free(yMatrix);
+
+        for (i = 0; i < dimension; ++i)
+        {
+            free(cofactorMatrix[i]);
+            free(inverse[i]);
+        }
+        free(cofactorMatrix);
+        free(inverse);
+    }
+
+    // Clean up.
     if (matrix != NULL)
     {
         int i;
@@ -118,6 +173,9 @@ int main(int argc, char* argv[])
 
         free(matrix);
     }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Finalize();
 
     return 0;
 }
@@ -133,17 +191,39 @@ void showUsage(char* applicationName)
         "dimension and the second line contains space delimited elements\n");
 }
 
-float** createDiagonalMatrix(int dimension)
+void print2dMatrix(double** arr, int dimension)
 {
-    float** arr = (float**)malloc(dimension * sizeof(float*));
-    assert(arr != NULL);
+    int i;
+    for (i = 0; i < dimension; ++i)
+    {
+        int j;
+        for (j = 0; j < dimension; ++j)
+        {
+            printf("%7.2f ", arr[i][j]);
+        }
+
+        printf("\n");
+    }
+}
+
+void print1dMatrix(double* arr, int dimension)
+{
+    int i;
+    for (i = 0; i < dimension; ++i)
+    {
+        printf("%7.2f ", arr[i]);
+    }
+
+    printf("\n");
+}
+
+double** createDiagonalMatrix(int dimension)
+{
+    double** arr = create2dDoubleMatrix(dimension);
 
     int i, j;
     for (i = 0; i < dimension; ++i)
     {
-        arr[i] = (float*)malloc(dimension * sizeof(float));
-        assert(arr[i] != NULL);
-
         for (j = 0; j < dimension; ++j)
         {
             if (i == j)
@@ -160,22 +240,16 @@ float** createDiagonalMatrix(int dimension)
     return arr;
 }
 
-float** createRandomMatrix(int dimension)
+double** createRandomMatrix(int dimension)
 {
-    float** arr = (float**)malloc(dimension * sizeof(float*));
-    assert(arr != NULL);
-
-    srand(time(0));
+    double** arr = create2dDoubleMatrix(dimension);
 
     int i, j, ceiling = 100;
     for (i = 0; i < dimension; ++i)
     {
-        arr[i] = (float*)malloc(dimension * sizeof(float));
-        assert(arr[i] != NULL);
-
         for (j = 0; j < dimension; ++j)
         {
-            arr[i][j] = rand() % ceiling;
+            arr[i][j] = (double)rand() / ((double)RAND_MAX + 1) * ceiling;
         }
     }
 
@@ -198,29 +272,27 @@ int getDimensionFromFile(char* fileName)
     return dimension;
 }
 
-float** readMatrixFromFile(char* fileName)
+double** getMatrixFromFile(char* fileName)
 {
-    float** arr = NULL;
-
-    // First line contains dimension (n x n).
-    int dimension = getDimensionFromFile(fileName);
+    double** arr = NULL;
 
     FILE* fp = fopen(fileName, "r");
     if (fp != NULL)
     {
-        // Next line contains matrix contents (space delimited floats).
-        arr = (float**)malloc(dimension * sizeof(float*));
-        assert(arr != NULL);
+        // First line contains dimension (n x n).
+        int dimension;
+        fscanf(fp, "%d", &dimension);
+        assert(dimension != 0);
+
+        // Next line contains matrix contents (space delimited doubles).
+        arr = create2dDoubleMatrix(dimension);
 
         int i, j;
         for (i = 0; i < dimension; ++i)
         {
-            arr[i] = (float*)malloc(dimension * sizeof(float));
-            assert(arr[i] != NULL);
-
             for (j = 0; j < dimension; ++j)
             {
-                fscanf(fp, "%f", &arr[i][j]);
+                fscanf(fp, "%lf", &arr[i][j]);
             }
         }
 
@@ -230,3 +302,15 @@ float** readMatrixFromFile(char* fileName)
     return arr;
 }
 
+double* createColumnMatrix(int dimension)
+{
+    double* arr = create1dDoubleMatrix(dimension);
+
+    int i, ceiling = 100;
+    for (i = 0; i < dimension; ++i)
+    {
+        arr[i] = (double)rand() / ((double)RAND_MAX + 1) * ceiling;
+    }
+
+    return arr;
+}

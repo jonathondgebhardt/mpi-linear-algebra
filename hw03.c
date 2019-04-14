@@ -19,9 +19,24 @@
  * GitHub: https://github.com/jonathondgebhardt/mpi-linear-algebra
  */
 
+// Attempt to align memory.
+struct LinEq
+{
+    double** matrix;
+    double** cofactorMatrix;
+    double** inverse;
+    double* sampleX;
+    double* yMatrix;
+    char* fileName;
+    double det;
+    int dimension;
+};
+
 void showUsage(char*);
-void print2dMatrix(double**, int);
+struct LinEq* initLinEq();
+void cleanUp(struct LinEq*);
 void print1dMatrix(double*, int);
+void print2dMatrix(double**, int);
 double** createDiagonalMatrix(int);
 double** createRandomMatrix(int);
 int getDimensionFromFile(char*);
@@ -36,8 +51,8 @@ int main(int argc, char* argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ncpu);
 
-    int opt, rFlag = 0, dFlag = 0, fFlag = 0, dimension;
-    char* fileName;
+    int opt, rFlag = 0, dFlag = 0, fFlag = 0;
+    struct LinEq* le = initLinEq();
 
     while ((opt = getopt(argc, argv, "r:d:f:")) != -1)
     {
@@ -45,23 +60,27 @@ int main(int argc, char* argv[])
         {
             case 'r':
                 rFlag = 1;
-                dimension = atoi(optarg);
+                le->dimension = atoi(optarg);
                 break;
             case 'd':
                 dFlag = 1;
-                dimension = atoi(optarg);
+                le->dimension = atoi(optarg);
                 break;
             case 'f':
                 fFlag = 1;
-                fileName = optarg;
+                le->fileName = optarg;
                 break;
             case '?':
                 if (rank == 0)
                 {
+                    fprintf(stderr, "Invalid parameter '%s'\n", opt);
+
                     showUsage(argv[0]);
                     MPI_Abort(MPI_COMM_WORLD, 1);
+
                     return 1;
                 }
+                break;
         }
     }
 
@@ -72,15 +91,21 @@ int main(int argc, char* argv[])
         {
             fprintf(stderr,
                     "A value for -r, -d, or -f exclusively is required\n");
+
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
+            cleanUp(le);
+
             return 1;
         }
         else if (rFlag + dFlag + fFlag > 1)
         {
             fprintf(stderr, "Only one option may be used at a time\n");
+
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
+            cleanUp(le);
+
             return 1;
         }
     }
@@ -92,87 +117,70 @@ int main(int argc, char* argv[])
     srand(time(NULL));
 
     // Populate matrix based on user request.
-    double** matrix;
     if (rFlag == 1)
     {
-        matrix = createRandomMatrix(dimension);
+        le->matrix = createRandomMatrix(le->dimension);
     }
     else if (dFlag == 1)
     {
-        matrix = createDiagonalMatrix(dimension);
+        le->matrix = createDiagonalMatrix(le->dimension);
     }
     else
     {
-        matrix = getMatrixFromFile(fileName);
-        if (matrix == NULL)
+        le->matrix = getMatrixFromFile(le->fileName);
+        if (le->matrix == NULL)
         {
             fprintf(stderr, "Error reading from file\n");
+
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
+            cleanUp(le);
+
             return 1;
         }
 
-        dimension = getDimensionFromFile(fileName);
+        le->dimension = getDimensionFromFile(le->fileName);
     }
 
-    printf("\nThe given matrix is:\n");
-    print2dMatrix(matrix, dimension);
+    printf("\nThe given matrix:\n");
+    print2dMatrix(le->matrix, le->dimension);
 
     // If the determinant is 0, we can't do any meaningful work.
-    double det;
-    if ((det = determinantNehrbass(matrix, 0, dimension, dimension)) == 0)
+    if ((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
+                                       le->dimension)) == 0)
     {
         printf("Determinant is zero, infinitely many solutions exist\n");
     }
     else
     {
-        printf("\nDeterminant of the given matrix is:\n %7.2f\n", det);
+        printf("\nDeterminant of the given matrix:\n  %.4f\n", le->det);
 
-        double** cofactorMatrix = cofactor(matrix, dimension);
-        double** inverse = transpose(matrix, cofactorMatrix, dimension);
+        le->cofactorMatrix = cofactor(le->matrix, le->dimension);
+        le->inverse = transpose(le->matrix, le->cofactorMatrix, le->dimension);
 
-        printf("\nInverse of the given matrix is:\n");
-        print2dMatrix(inverse, dimension);
+        printf("\nThe inverse of the given matrix:\n");
+        print2dMatrix(le->inverse, le->dimension);
 
         // Generate a random 'x' to solve Ax = Y.
-        double* sampleX = createColumnMatrix(dimension);
-        printf("\nThe generated sampleX is:\n");
-        print1dMatrix(sampleX, dimension);
+        le->sampleX = createColumnMatrix(le->dimension);
+        printf("\nThe generated sampleX:\n");
+        print1dMatrix(le->sampleX, le->dimension);
 
-        double* yMatrix = create1dDoubleMatrix(dimension);
+        le->yMatrix = create1dDoubleMatrix(le->dimension);
         int i;
-        for (i = 0; i < dimension; ++i)
+        for (i = 0; i < le->dimension; ++i)
         {
-            yMatrix[i] = dot(matrix[i], sampleX, dimension);
+            le->yMatrix[i] = dot(le->matrix[i], le->sampleX, le->dimension);
         }
 
-        printf("\nThe computed yMatrix is:\n");
-        print1dMatrix(yMatrix, dimension);
+        printf("\nThe computed yMatrix:\n");
+        print1dMatrix(le->yMatrix, le->dimension);
 
-        // Clean up.
-        free(sampleX);
-        free(yMatrix);
-
-        for (i = 0; i < dimension; ++i)
-        {
-            free(cofactorMatrix[i]);
-            free(inverse[i]);
-        }
-        free(cofactorMatrix);
-        free(inverse);
+        // Now that we have A, a sample x, and Y, we use A and Y to solve for x
+        // using back substitution.
     }
 
-    // Clean up.
-    if (matrix != NULL)
-    {
-        int i;
-        for (i = 0; i < dimension; ++i)
-        {
-            free(matrix[i]);
-        }
-
-        free(matrix);
-    }
+    cleanUp(le);
 
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize();
@@ -191,18 +199,65 @@ void showUsage(char* applicationName)
         "dimension and the second line contains space delimited elements\n");
 }
 
-void print2dMatrix(double** arr, int dimension)
+struct LinEq* initLinEq()
 {
-    int i;
-    for (i = 0; i < dimension; ++i)
+    struct LinEq* le = malloc(sizeof(struct LinEq));
+    le->matrix = NULL;
+    le->cofactorMatrix = NULL;
+    le->inverse = NULL;
+    le->sampleX = NULL;
+    le->yMatrix = NULL;
+
+    return le;
+}
+
+void cleanUp(struct LinEq* le)
+{
+    if (le != NULL)
     {
-        int j;
-        for (j = 0; j < dimension; ++j)
+        int i;
+
+        if (le->matrix != NULL)
         {
-            printf("%7.2f ", arr[i][j]);
+            for (i = 0; i < le->dimension; ++i)
+            {
+                free(le->matrix[i]);
+            }
+
+            free(le->matrix);
         }
 
-        printf("\n");
+        if (le->cofactorMatrix != NULL)
+        {
+            for (i = 0; i < le->dimension; ++i)
+            {
+                free(le->cofactorMatrix[i]);
+            }
+
+            free(le->cofactorMatrix);
+        }
+
+        if (le->inverse != NULL)
+        {
+            for (i = 0; i < le->dimension; ++i)
+            {
+                free(le->inverse[i]);
+            }
+
+            free(le->inverse);
+        }
+
+        if (le->sampleX != NULL)
+        {
+            free(le->sampleX);
+        }
+
+        if (le->yMatrix != NULL)
+        {
+            free(le->yMatrix);
+        }
+
+        free(le);
     }
 }
 
@@ -211,10 +266,25 @@ void print1dMatrix(double* arr, int dimension)
     int i;
     for (i = 0; i < dimension; ++i)
     {
-        printf("%7.2f ", arr[i]);
+        printf("%9.4f ", arr[i]);
     }
 
     printf("\n");
+}
+
+void print2dMatrix(double** arr, int dimension)
+{
+    int i;
+    for (i = 0; i < dimension; ++i)
+    {
+        int j;
+        for (j = 0; j < dimension; ++j)
+        {
+            printf("%9.4f ", arr[i][j]);
+        }
+
+        printf("\n");
+    }
 }
 
 double** createDiagonalMatrix(int dimension)

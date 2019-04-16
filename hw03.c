@@ -20,12 +20,12 @@
  */
 
 // Attempt to align memory.
-struct LinEq
+typedef struct
 {
     double** matrixWithSolution;
     double** matrix;
     double** cofactorMatrix;
-    double** inverse;
+    double** inverseMatrix;
     double* xSample;
     double* xSolution;
     double* yMatrix;
@@ -33,11 +33,11 @@ struct LinEq
     double det;
     double error;
     int dimension;
-};
+} LinEq;
 
 void showUsage(char*);
-struct LinEq* initLinEq();
-void cleanUp(struct LinEq*);
+LinEq* initLinEq();
+void cleanUp(LinEq*);
 void print1dMatrix(double*, int);
 void print2dMatrix(double**, int, int);
 double** createDiagonalMatrix(int);
@@ -45,13 +45,13 @@ double** createRandomMatrix(int);
 int getDimensionFromFile(char*);
 double** getMatrixFromFile(char*);
 double* createRandomColumnMatrix(int);
-void appendSolutionToMatrix(struct LinEq*);
-void getSolutionFromMatrix(struct LinEq*);
+void appendSolutionToMatrix(LinEq*);
+void getSolutionFromMatrix(LinEq*);
 void rowReduce(double**, int);
 void swapRows(double**, int, int, int);
 void scalarMultiply(double*, double, int);
 double getError(double*, double*, int);
-void showResults(struct LinEq*);
+void showResults(LinEq*);
 
 int main(int argc, char* argv[])
 {
@@ -61,10 +61,10 @@ int main(int argc, char* argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ncpu);
 
-    int opt, rFlag = 0, dFlag = 0, fFlag = 0;
-    struct LinEq* le = initLinEq();
+    int opt, rFlag = 0, dFlag = 0, fFlag = 0, vFlag = 0;
+    LinEq* le = initLinEq();
 
-    while ((opt = getopt(argc, argv, "r:d:f:")) != -1)
+    while ((opt = getopt(argc, argv, "r:d:f:v")) != -1)
     {
         switch (opt)
         {
@@ -79,6 +79,9 @@ int main(int argc, char* argv[])
             case 'f':
                 fFlag = 1;
                 le->fileName = optarg;
+                break;
+            case 'v':
+                vFlag = 1;
                 break;
             case '?':
                 if (rank == 0)
@@ -127,60 +130,88 @@ int main(int argc, char* argv[])
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Populate matrix based on user request.
-    if (rFlag == 1)
+    if (rank == 0)
     {
-        le->matrix = createRandomMatrix(le->dimension);
-    }
-    else if (dFlag == 1)
-    {
-        le->matrix = createDiagonalMatrix(le->dimension);
-    }
-    else
-    {
-        le->matrix = getMatrixFromFile(le->fileName);
-        if (le->matrix == NULL)
+        if (rFlag == 1)
         {
-            fprintf(stderr, "Error reading from file\n");
-
-            showUsage(argv[0]);
-            MPI_Abort(MPI_COMM_WORLD, 1);
-            cleanUp(le);
-
-            return 1;
+            le->matrix = createRandomMatrix(le->dimension);
         }
+        else if (dFlag == 1)
+        {
+            le->matrix = createDiagonalMatrix(le->dimension);
+        }
+        else
+        {
+            le->matrix = getMatrixFromFile(le->fileName);
+            if (le->matrix == NULL)
+            {
+                fprintf(stderr, "Error reading from file\n");
 
-        le->dimension = getDimensionFromFile(le->fileName);
+                showUsage(argv[0]);
+                MPI_Abort(MPI_COMM_WORLD, 1);
+                cleanUp(le);
+
+                return 1;
+            }
+
+            le->dimension = getDimensionFromFile(le->fileName);
+        }
     }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    double startTime = MPI_Wtime();
 
     // TODO: This part is parallelized.
     // If the determinant is 0, we can't do any meaningful work.
     if ((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
                                        le->dimension)) != 0)
     {
-        le->cofactorMatrix = cofactor(le->matrix, le->dimension);
-
-        le->inverse = transpose(le->matrix, le->cofactorMatrix, le->dimension);
-
-        // Generate a random 'x' to solve Ax = Y.
-        le->xSample = createRandomColumnMatrix(le->dimension);
-
-        le->yMatrix = create1dDoubleMatrix(le->dimension);
-        int i;
-        for (i = 0; i < le->dimension; ++i)
+        if (rank == 0)
         {
-            le->yMatrix[i] = dot(le->matrix[i], le->xSample, le->dimension);
+            // TODO: Determine how many tasks are needed to solve for 10. Dish
+            // out tasks until done. Gather error.
         }
+        else
+        {
+            // TODO: Worker receive status. If no work, quit.
 
-        // Now that we have A, a sample x, and Y, we use A and Y to solve for x
-        // using back substitution.
-        appendSolutionToMatrix(le);
-        rowReduce(le->matrixWithSolution, le->dimension);
-        getSolutionFromMatrix(le);
+            le->cofactorMatrix = cofactor(le->matrix, le->dimension);
 
-        le->error = getError(le->xSample, le->xSolution, le->dimension);
+            le->inverseMatrix =
+                transpose(le->matrix, le->cofactorMatrix, le->dimension);
+
+            // Generate a random 'x' to solve Ax = Y.
+            le->xSample = createRandomColumnMatrix(le->dimension);
+
+            le->yMatrix = create1dDoubleMatrix(le->dimension);
+            int i;
+            for (i = 0; i < le->dimension; ++i)
+            {
+                le->yMatrix[i] = dot(le->matrix[i], le->xSample, le->dimension);
+            }
+
+            // Now that we have A, a sample x, and Y, we use A and Y to solve
+            // for x using back substitution.
+            appendSolutionToMatrix(le);
+            rowReduce(le->matrixWithSolution, le->dimension);
+            getSolutionFromMatrix(le);
+
+            le->error = getError(le->xSample, le->xSolution, le->dimension);
+        }
     }
 
-    showResults(le);
+    double endTime = MPI_Wtime();
+
+    if (rank == 0 && vFlag == 1)
+    {
+        showResults(le);
+    }
+
+    printf("\n-------------------------------------------\n");
+    printf("Elapsed time: %lf\n", (endTime - startTime));
+    printf("Error: %lf", le->error);
+    printf("\n-------------------------------------------\n\n");
 
     cleanUp(le);
 
@@ -192,22 +223,23 @@ int main(int argc, char* argv[])
 
 void showUsage(char* applicationName)
 {
-    printf("Usage: %s [-r m] [-d n] [-f fileName]\n", applicationName);
+    printf("Usage: %s [-r m] [-d n] [-f fileName] [-v]\n", applicationName);
     printf("\t-r: m x m matrix filled with random numbers\n");
     printf(
         "\t-d: n x n diagonal matrix where the values are the row numbers\n");
     printf(
         "\t-f: read a matrix from a file where the first line is the square "
         "dimension and the second line contains space delimited elements\n");
+    printf("\t-v: verbose output\n");
 }
 
-struct LinEq* initLinEq()
+LinEq* initLinEq()
 {
-    struct LinEq* le = malloc(sizeof(struct LinEq));
+    LinEq* le = malloc(sizeof(LinEq));
     le->matrixWithSolution = NULL;
     le->matrix = NULL;
     le->cofactorMatrix = NULL;
-    le->inverse = NULL;
+    le->inverseMatrix = NULL;
     le->xSample = NULL;
     le->xSolution = NULL;
     le->yMatrix = NULL;
@@ -218,7 +250,7 @@ struct LinEq* initLinEq()
     return le;
 }
 
-void cleanUp(struct LinEq* le)
+void cleanUp(LinEq* le)
 {
     if (le != NULL)
     {
@@ -244,14 +276,14 @@ void cleanUp(struct LinEq* le)
             free(le->cofactorMatrix);
         }
 
-        if (le->inverse != NULL)
+        if (le->inverseMatrix != NULL)
         {
             for (i = 0; i < le->dimension; ++i)
             {
-                free(le->inverse[i]);
+                free(le->inverseMatrix[i]);
             }
 
-            free(le->inverse);
+            free(le->inverseMatrix);
         }
 
         if (le->xSolution != NULL)
@@ -397,7 +429,7 @@ double* createRandomColumnMatrix(int dimension)
     return arr;
 }
 
-void getSolutionFromMatrix(struct LinEq* le)
+void getSolutionFromMatrix(LinEq* le)
 {
     le->xSolution = create1dDoubleMatrix(le->dimension);
     int i;
@@ -407,7 +439,7 @@ void getSolutionFromMatrix(struct LinEq* le)
     }
 }
 
-void appendSolutionToMatrix(struct LinEq* le)
+void appendSolutionToMatrix(LinEq* le)
 {
     if (le != NULL && le->matrix != NULL && le->yMatrix != NULL)
     {
@@ -531,7 +563,7 @@ double getError(double* a, double* b, int dimension)
     return sqrt(sumOfSquaredDiff) / (double)dimension;
 }
 
-void showResults(struct LinEq* le)
+void showResults(LinEq* le)
 {
     if (le != NULL && le->dimension != -1)
     {
@@ -546,10 +578,10 @@ void showResults(struct LinEq* le)
             printf("\nDeterminant of the given matrix:\n  %.4lf\n", le->det);
         }
 
-        if (le->inverse != NULL)
+        if (le->inverseMatrix != NULL)
         {
             printf("\nThe inverse of the given matrix:\n");
-            print2dMatrix(le->inverse, le->dimension, le->dimension);
+            print2dMatrix(le->inverseMatrix, le->dimension, le->dimension);
         }
 
         if (le->xSample != NULL)

@@ -22,13 +22,16 @@
 // Attempt to align memory.
 struct LinEq
 {
+    double** matrixWithSolution;
     double** matrix;
     double** cofactorMatrix;
     double** inverse;
-    double* sampleX;
+    double* xSample;
+    double* xSolution;
     double* yMatrix;
     char* fileName;
     double det;
+    double error;
     int dimension;
 };
 
@@ -36,12 +39,19 @@ void showUsage(char*);
 struct LinEq* initLinEq();
 void cleanUp(struct LinEq*);
 void print1dMatrix(double*, int);
-void print2dMatrix(double**, int);
+void print2dMatrix(double**, int, int);
 double** createDiagonalMatrix(int);
 double** createRandomMatrix(int);
 int getDimensionFromFile(char*);
 double** getMatrixFromFile(char*);
-double* createColumnMatrix(int);
+double* createRandomColumnMatrix(int);
+void appendSolutionToMatrix(struct LinEq*);
+void getSolutionFromMatrix(struct LinEq*);
+void rowReduce(double**, int);
+void swapRows(double**, int, int, int);
+void scalarMultiply(double*, double, int);
+double getError(double*, double*, int);
+void showResults(struct LinEq*);
 
 int main(int argc, char* argv[])
 {
@@ -108,13 +118,13 @@ int main(int argc, char* argv[])
 
             return 1;
         }
+
+        // Seeding rand() isn't necessary for every case, but seed it here once
+        // to simplify logic.
+        srand(time(NULL));
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
-
-    // Seeding rand() isn't necessary for every case, but seed it here once to
-    // simplify logic.
-    srand(time(NULL));
 
     // Populate matrix based on user request.
     if (rFlag == 1)
@@ -142,43 +152,35 @@ int main(int argc, char* argv[])
         le->dimension = getDimensionFromFile(le->fileName);
     }
 
-    printf("\nThe given matrix:\n");
-    print2dMatrix(le->matrix, le->dimension);
-
+    // TODO: This part is parallelized.
     // If the determinant is 0, we can't do any meaningful work.
     if ((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
-                                       le->dimension)) == 0)
+                                       le->dimension)) != 0)
     {
-        printf("Determinant is zero, infinitely many solutions exist\n");
-    }
-    else
-    {
-        printf("\nDeterminant of the given matrix:\n  %.4f\n", le->det);
-
         le->cofactorMatrix = cofactor(le->matrix, le->dimension);
+
         le->inverse = transpose(le->matrix, le->cofactorMatrix, le->dimension);
 
-        printf("\nThe inverse of the given matrix:\n");
-        print2dMatrix(le->inverse, le->dimension);
-
         // Generate a random 'x' to solve Ax = Y.
-        le->sampleX = createColumnMatrix(le->dimension);
-        printf("\nThe generated sampleX:\n");
-        print1dMatrix(le->sampleX, le->dimension);
+        le->xSample = createRandomColumnMatrix(le->dimension);
 
         le->yMatrix = create1dDoubleMatrix(le->dimension);
         int i;
         for (i = 0; i < le->dimension; ++i)
         {
-            le->yMatrix[i] = dot(le->matrix[i], le->sampleX, le->dimension);
+            le->yMatrix[i] = dot(le->matrix[i], le->xSample, le->dimension);
         }
-
-        printf("\nThe computed yMatrix:\n");
-        print1dMatrix(le->yMatrix, le->dimension);
 
         // Now that we have A, a sample x, and Y, we use A and Y to solve for x
         // using back substitution.
+        appendSolutionToMatrix(le);
+        rowReduce(le->matrixWithSolution, le->dimension);
+        getSolutionFromMatrix(le);
+
+        le->error = getError(le->xSample, le->xSolution, le->dimension);
     }
+
+    showResults(le);
 
     cleanUp(le);
 
@@ -202,11 +204,16 @@ void showUsage(char* applicationName)
 struct LinEq* initLinEq()
 {
     struct LinEq* le = malloc(sizeof(struct LinEq));
+    le->matrixWithSolution = NULL;
     le->matrix = NULL;
     le->cofactorMatrix = NULL;
     le->inverse = NULL;
-    le->sampleX = NULL;
+    le->xSample = NULL;
+    le->xSolution = NULL;
     le->yMatrix = NULL;
+    le->det = -1;
+    le->error = -1;
+    le->dimension = -1;
 
     return le;
 }
@@ -247,9 +254,14 @@ void cleanUp(struct LinEq* le)
             free(le->inverse);
         }
 
-        if (le->sampleX != NULL)
+        if (le->xSolution != NULL)
         {
-            free(le->sampleX);
+            free(le->xSolution);
+        }
+
+        if (le->xSample != NULL)
+        {
+            free(le->xSample);
         }
 
         if (le->yMatrix != NULL)
@@ -272,13 +284,13 @@ void print1dMatrix(double* arr, int dimension)
     printf("\n");
 }
 
-void print2dMatrix(double** arr, int dimension)
+void print2dMatrix(double** arr, int row, int col)
 {
     int i;
-    for (i = 0; i < dimension; ++i)
+    for (i = 0; i < row; ++i)
     {
         int j;
-        for (j = 0; j < dimension; ++j)
+        for (j = 0; j < col; ++j)
         {
             printf("%9.4f ", arr[i][j]);
         }
@@ -372,7 +384,7 @@ double** getMatrixFromFile(char* fileName)
     return arr;
 }
 
-double* createColumnMatrix(int dimension)
+double* createRandomColumnMatrix(int dimension)
 {
     double* arr = create1dDoubleMatrix(dimension);
 
@@ -383,4 +395,184 @@ double* createColumnMatrix(int dimension)
     }
 
     return arr;
+}
+
+void getSolutionFromMatrix(struct LinEq* le)
+{
+    le->xSolution = create1dDoubleMatrix(le->dimension);
+    int i;
+    for (i = 0; i < le->dimension; ++i)
+    {
+        le->xSolution[i] = le->matrixWithSolution[i][le->dimension];
+    }
+}
+
+void appendSolutionToMatrix(struct LinEq* le)
+{
+    if (le != NULL && le->matrix != NULL && le->yMatrix != NULL)
+    {
+        le->matrixWithSolution =
+            (double**)malloc(le->dimension * sizeof(double*));
+        int i;
+        for (i = 0; i < le->dimension; ++i)
+        {
+            le->matrixWithSolution[i] =
+                (double*)malloc((le->dimension + 1) * sizeof(double));
+        }
+
+        for (i = 0; i < le->dimension; ++i)
+        {
+            int j;
+            for (j = 0; j < le->dimension; ++j)
+            {
+                le->matrixWithSolution[i][j] = le->matrix[i][j];
+            }
+
+            le->matrixWithSolution[i][le->dimension] = le->yMatrix[i];
+        }
+    }
+}
+
+// Pseudo-code taken from
+// https://www.rosettacode.org/wiki/Reduced_row_echelon_form.
+// I should mention that there are implementations for several languages on this
+// page. I did not directly copy from these implementations but implemented my
+// own version based on the pseudo code and used the reference implementations
+// as a guideline.
+void rowReduce(double** arr, int dimension)
+{
+    int r, lead = 0, rowCount = dimension, columnCount = dimension + 1;
+
+    for (r = 0; r < rowCount; ++r)
+    {
+        if (columnCount <= lead)
+        {
+            return;
+        }
+
+        int i = r;
+
+        while (arr[i][lead] == 0)
+        {
+            ++i;
+
+            if (rowCount == i)
+            {
+                i = r;
+
+                ++lead;
+
+                if (columnCount == lead)
+                {
+                    return;
+                }
+            }
+        }
+
+        swapRows(arr, i, r, columnCount);
+
+        if (arr[r][lead] != 0)
+        {
+            scalarMultiply(arr[r], (1 / arr[r][lead]), columnCount);
+        }
+
+        for (i = 0; i < rowCount; ++i)
+        {
+            if (i != r)
+            {
+                int j;
+                double leadValue = -arr[i][lead];
+                for (j = 0; j < columnCount; ++j)
+                {
+                    arr[i][j] += leadValue * arr[r][j];
+                }
+            }
+        }
+
+        ++lead;
+    }
+}
+
+void swapRows(double** arr, int first, int second, int dimension)
+{
+    if (arr != NULL && arr[first] != NULL && arr[second] != NULL)
+    {
+        int i;
+        for (i = 0; i < dimension; ++i)
+        {
+            double copy = arr[first][i];
+            arr[first][i] = arr[second][i];
+            arr[second][i] = copy;
+        }
+    }
+}
+
+void scalarMultiply(double* arr, double scalar, int dimension)
+{
+    if (arr != NULL)
+    {
+        int i;
+        for (i = 0; i < dimension; ++i)
+        {
+            arr[i] *= scalar;
+        }
+    }
+}
+
+double getError(double* a, double* b, int dimension)
+{
+    int i;
+    double sumOfSquaredDiff = 0.0;
+    for (i = 0; i < dimension; ++i)
+    {
+        sumOfSquaredDiff += pow(fabs(a[i] - b[i]), 2);
+    }
+
+    return sqrt(sumOfSquaredDiff) / (double)dimension;
+}
+
+void showResults(struct LinEq* le)
+{
+    if (le != NULL && le->dimension != -1)
+    {
+        if (le->matrix != NULL)
+        {
+            printf("\nThe given matrix:\n");
+            print2dMatrix(le->matrix, le->dimension, le->dimension);
+        }
+
+        if (le->det != -1)
+        {
+            printf("\nDeterminant of the given matrix:\n  %.4lf\n", le->det);
+        }
+
+        if (le->inverse != NULL)
+        {
+            printf("\nThe inverse of the given matrix:\n");
+            print2dMatrix(le->inverse, le->dimension, le->dimension);
+        }
+
+        if (le->xSample != NULL)
+        {
+            printf("\nThe generated x sample:\n");
+            print1dMatrix(le->xSample, le->dimension);
+        }
+
+        if (le->yMatrix != NULL)
+        {
+            printf("\nThe computed y matrix:\n");
+            print1dMatrix(le->yMatrix, le->dimension);
+        }
+
+        if (le->xSolution != NULL)
+        {
+            printf("\nThe computed solution for Ax = Y:\n");
+            print1dMatrix(le->xSolution, le->dimension);
+        }
+
+        if (le->error != -1)
+        {
+            printf("\nThe computed error:\n  %.4lf\n", le->error);
+        }
+    }
 }

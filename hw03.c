@@ -64,9 +64,9 @@ int main(int argc, char* argv[])
     int opt, rFlag = 0, dFlag = 0, fFlag = 0, vFlag = 0;
     LinEq* le = initLinEq();
 
-    while ((opt = getopt(argc, argv, "r:d:f:v")) != -1)
+    while((opt = getopt(argc, argv, "r:d:f:v")) != -1)
     {
-        switch (opt)
+        switch(opt)
         {
             case 'r':
                 rFlag = 1;
@@ -84,7 +84,7 @@ int main(int argc, char* argv[])
                 vFlag = 1;
                 break;
             case '?':
-                if (rank == 0)
+                if(rank == 0)
                 {
                     fprintf(stderr, "Invalid parameter '%s'\n", opt);
 
@@ -97,10 +97,10 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (rank == 0)
+    if(rank == 0)
     {
         // Validate user input.
-        if (rFlag == 0 && dFlag == 0 && fFlag == 0)
+        if(rFlag == 0 && dFlag == 0 && fFlag == 0)
         {
             fprintf(stderr,
                     "A value for -r, -d, or -f exclusively is required\n");
@@ -111,7 +111,7 @@ int main(int argc, char* argv[])
 
             return 1;
         }
-        else if (rFlag + dFlag + fFlag > 1)
+        else if(rFlag + dFlag + fFlag > 1)
         {
             fprintf(stderr, "Only one option may be used at a time\n");
 
@@ -130,20 +130,20 @@ int main(int argc, char* argv[])
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Populate matrix based on user request.
-    if (rank == 0)
+    if(rank == 0)
     {
-        if (rFlag == 1)
+        if(rFlag == 1)
         {
             le->matrix = createRandomMatrix(le->dimension);
         }
-        else if (dFlag == 1)
+        else if(dFlag == 1)
         {
             le->matrix = createDiagonalMatrix(le->dimension);
         }
         else
         {
             le->matrix = getMatrixFromFile(le->fileName);
-            if (le->matrix == NULL)
+            if(le->matrix == NULL)
             {
                 fprintf(stderr, "Error reading from file\n");
 
@@ -164,10 +164,10 @@ int main(int argc, char* argv[])
 
     // TODO: This part is parallelized.
     // If the determinant is 0, we can't do any meaningful work.
-    if ((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
-                                       le->dimension)) != 0)
+    if((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
+                                      le->dimension)) != 0)
     {
-        if (rank == 0)
+        if(rank == 0)
         {
             // TODO: Determine how many tasks are needed to solve for 10. Dish
             // out tasks until done. Gather error.
@@ -186,7 +186,7 @@ int main(int argc, char* argv[])
 
             le->yMatrix = create1dDoubleMatrix(le->dimension);
             int i;
-            for (i = 0; i < le->dimension; ++i)
+            for(i = 0; i < le->dimension; ++i)
             {
                 le->yMatrix[i] = dot(le->matrix[i], le->xSample, le->dimension);
             }
@@ -203,7 +203,7 @@ int main(int argc, char* argv[])
 
     double endTime = MPI_Wtime();
 
-    if (rank == 0 && vFlag == 1)
+    if(rank == 0 && vFlag == 1)
     {
         showResults(le);
     }
@@ -252,13 +252,13 @@ LinEq* initLinEq()
 
 void cleanUp(LinEq* le)
 {
-    if (le != NULL)
+    if(le != NULL)
     {
         int i;
 
-        if (le->matrix != NULL)
+        if(le->matrix != NULL)
         {
-            for (i = 0; i < le->dimension; ++i)
+            for(i = 0; i < le->dimension; ++i)
             {
                 free(le->matrix[i]);
             }
@@ -266,9 +266,9 @@ void cleanUp(LinEq* le)
             free(le->matrix);
         }
 
-        if (le->cofactorMatrix != NULL)
+        if(le->cofactorMatrix != NULL)
         {
-            for (i = 0; i < le->dimension; ++i)
+            for(i = 0; i < le->dimension; ++i)
             {
                 free(le->cofactorMatrix[i]);
             }
@@ -276,9 +276,9 @@ void cleanUp(LinEq* le)
             free(le->cofactorMatrix);
         }
 
-        if (le->inverseMatrix != NULL)
+        if(le->inverseMatrix != NULL)
         {
-            for (i = 0; i < le->dimension; ++i)
+            for(i = 0; i < le->dimension; ++i)
             {
                 free(le->inverseMatrix[i]);
             }
@@ -286,17 +286,17 @@ void cleanUp(LinEq* le)
             free(le->inverseMatrix);
         }
 
-        if (le->xSolution != NULL)
+        if(le->xSolution != NULL)
         {
             free(le->xSolution);
         }
 
-        if (le->xSample != NULL)
+        if(le->xSample != NULL)
         {
             free(le->xSample);
         }
 
-        if (le->yMatrix != NULL)
+        if(le->yMatrix != NULL)
         {
             free(le->yMatrix);
         }
@@ -308,7 +308,7 @@ void cleanUp(LinEq* le)
 void print1dMatrix(double* arr, int dimension)
 {
     int i;
-    for (i = 0; i < dimension; ++i)
+    for(i = 0; i < dimension; ++i)
     {
         printf("%9.4f ", arr[i]);
     }
@@ -319,10 +319,10 @@ void print1dMatrix(double* arr, int dimension)
 void print2dMatrix(double** arr, int row, int col)
 {
     int i;
-    for (i = 0; i < row; ++i)
+    for(i = 0; i < row; ++i)
     {
         int j;
-        for (j = 0; j < col; ++j)
+        for(j = 0; j < col; ++j)
         {
             printf("%9.4f ", arr[i][j]);
         }
@@ -336,11 +336,11 @@ double** createDiagonalMatrix(int dimension)
     double** arr = create2dDoubleMatrix(dimension);
 
     int i, j;
-    for (i = 0; i < dimension; ++i)
+    for(i = 0; i < dimension; ++i)
     {
-        for (j = 0; j < dimension; ++j)
+        for(j = 0; j < dimension; ++j)
         {
-            if (i == j)
+            if(i == j)
             {
                 arr[i][j] = j + 1;
             }
@@ -359,9 +359,9 @@ double** createRandomMatrix(int dimension)
     double** arr = create2dDoubleMatrix(dimension);
 
     int i, j, ceiling = 100;
-    for (i = 0; i < dimension; ++i)
+    for(i = 0; i < dimension; ++i)
     {
-        for (j = 0; j < dimension; ++j)
+        for(j = 0; j < dimension; ++j)
         {
             arr[i][j] = (double)rand() / ((double)RAND_MAX + 1) * ceiling;
         }
@@ -375,7 +375,7 @@ int getDimensionFromFile(char* fileName)
     int dimension = 0;
 
     FILE* fp = fopen(fileName, "r");
-    if (fp != NULL)
+    if(fp != NULL)
     {
         fscanf(fp, "%d", &dimension);
         assert(dimension != 0);
@@ -391,7 +391,7 @@ double** getMatrixFromFile(char* fileName)
     double** arr = NULL;
 
     FILE* fp = fopen(fileName, "r");
-    if (fp != NULL)
+    if(fp != NULL)
     {
         // First line contains dimension (n x n).
         int dimension;
@@ -402,9 +402,9 @@ double** getMatrixFromFile(char* fileName)
         arr = create2dDoubleMatrix(dimension);
 
         int i, j;
-        for (i = 0; i < dimension; ++i)
+        for(i = 0; i < dimension; ++i)
         {
-            for (j = 0; j < dimension; ++j)
+            for(j = 0; j < dimension; ++j)
             {
                 fscanf(fp, "%lf", &arr[i][j]);
             }
@@ -421,7 +421,7 @@ double* createRandomColumnMatrix(int dimension)
     double* arr = create1dDoubleMatrix(dimension);
 
     int i, ceiling = 100;
-    for (i = 0; i < dimension; ++i)
+    for(i = 0; i < dimension; ++i)
     {
         arr[i] = (double)rand() / ((double)RAND_MAX + 1) * ceiling;
     }
@@ -433,7 +433,7 @@ void getSolutionFromMatrix(LinEq* le)
 {
     le->xSolution = create1dDoubleMatrix(le->dimension);
     int i;
-    for (i = 0; i < le->dimension; ++i)
+    for(i = 0; i < le->dimension; ++i)
     {
         le->xSolution[i] = le->matrixWithSolution[i][le->dimension];
     }
@@ -441,21 +441,21 @@ void getSolutionFromMatrix(LinEq* le)
 
 void appendSolutionToMatrix(LinEq* le)
 {
-    if (le != NULL && le->matrix != NULL && le->yMatrix != NULL)
+    if(le != NULL && le->matrix != NULL && le->yMatrix != NULL)
     {
         le->matrixWithSolution =
             (double**)malloc(le->dimension * sizeof(double*));
         int i;
-        for (i = 0; i < le->dimension; ++i)
+        for(i = 0; i < le->dimension; ++i)
         {
             le->matrixWithSolution[i] =
                 (double*)malloc((le->dimension + 1) * sizeof(double));
         }
 
-        for (i = 0; i < le->dimension; ++i)
+        for(i = 0; i < le->dimension; ++i)
         {
             int j;
-            for (j = 0; j < le->dimension; ++j)
+            for(j = 0; j < le->dimension; ++j)
             {
                 le->matrixWithSolution[i][j] = le->matrix[i][j];
             }
@@ -475,26 +475,26 @@ void rowReduce(double** arr, int dimension)
 {
     int r, lead = 0, rowCount = dimension, columnCount = dimension + 1;
 
-    for (r = 0; r < rowCount; ++r)
+    for(r = 0; r < rowCount; ++r)
     {
-        if (columnCount <= lead)
+        if(columnCount <= lead)
         {
             return;
         }
 
         int i = r;
 
-        while (arr[i][lead] == 0)
+        while(arr[i][lead] == 0)
         {
             ++i;
 
-            if (rowCount == i)
+            if(rowCount == i)
             {
                 i = r;
 
                 ++lead;
 
-                if (columnCount == lead)
+                if(columnCount == lead)
                 {
                     return;
                 }
@@ -503,18 +503,18 @@ void rowReduce(double** arr, int dimension)
 
         swapRows(arr, i, r, columnCount);
 
-        if (arr[r][lead] != 0)
+        if(arr[r][lead] != 0)
         {
             scalarMultiply(arr[r], (1 / arr[r][lead]), columnCount);
         }
 
-        for (i = 0; i < rowCount; ++i)
+        for(i = 0; i < rowCount; ++i)
         {
-            if (i != r)
+            if(i != r)
             {
                 int j;
                 double leadValue = -arr[i][lead];
-                for (j = 0; j < columnCount; ++j)
+                for(j = 0; j < columnCount; ++j)
                 {
                     arr[i][j] += leadValue * arr[r][j];
                 }
@@ -527,10 +527,10 @@ void rowReduce(double** arr, int dimension)
 
 void swapRows(double** arr, int first, int second, int dimension)
 {
-    if (arr != NULL && arr[first] != NULL && arr[second] != NULL)
+    if(arr != NULL && arr[first] != NULL && arr[second] != NULL)
     {
         int i;
-        for (i = 0; i < dimension; ++i)
+        for(i = 0; i < dimension; ++i)
         {
             double copy = arr[first][i];
             arr[first][i] = arr[second][i];
@@ -541,10 +541,10 @@ void swapRows(double** arr, int first, int second, int dimension)
 
 void scalarMultiply(double* arr, double scalar, int dimension)
 {
-    if (arr != NULL)
+    if(arr != NULL)
     {
         int i;
-        for (i = 0; i < dimension; ++i)
+        for(i = 0; i < dimension; ++i)
         {
             arr[i] *= scalar;
         }
@@ -555,7 +555,7 @@ double getError(double* a, double* b, int dimension)
 {
     int i;
     double sumOfSquaredDiff = 0.0;
-    for (i = 0; i < dimension; ++i)
+    for(i = 0; i < dimension; ++i)
     {
         sumOfSquaredDiff += pow(fabs(a[i] - b[i]), 2);
     }
@@ -565,44 +565,44 @@ double getError(double* a, double* b, int dimension)
 
 void showResults(LinEq* le)
 {
-    if (le != NULL && le->dimension != -1)
+    if(le != NULL && le->dimension != -1)
     {
-        if (le->matrix != NULL)
+        if(le->matrix != NULL)
         {
             printf("\nThe given matrix:\n");
             print2dMatrix(le->matrix, le->dimension, le->dimension);
         }
 
-        if (le->det != -1)
+        if(le->det != -1)
         {
             printf("\nDeterminant of the given matrix:\n  %.4lf\n", le->det);
         }
 
-        if (le->inverseMatrix != NULL)
+        if(le->inverseMatrix != NULL)
         {
             printf("\nThe inverse of the given matrix:\n");
             print2dMatrix(le->inverseMatrix, le->dimension, le->dimension);
         }
 
-        if (le->xSample != NULL)
+        if(le->xSample != NULL)
         {
             printf("\nThe generated x sample:\n");
             print1dMatrix(le->xSample, le->dimension);
         }
 
-        if (le->yMatrix != NULL)
+        if(le->yMatrix != NULL)
         {
             printf("\nThe computed y matrix:\n");
             print1dMatrix(le->yMatrix, le->dimension);
         }
 
-        if (le->xSolution != NULL)
+        if(le->xSolution != NULL)
         {
             printf("\nThe computed solution for Ax = Y:\n");
             print1dMatrix(le->xSolution, le->dimension);
         }
 
-        if (le->error != -1)
+        if(le->error != -1)
         {
             printf("\nThe computed error:\n  %.4lf\n", le->error);
         }

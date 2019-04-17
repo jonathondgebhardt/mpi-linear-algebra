@@ -19,25 +19,7 @@
  * GitHub: https://github.com/jonathondgebhardt/mpi-linear-algebra
  */
 
-// Attempt to align memory.
-struct LinEq
-{
-    double** matrixWithSolution;
-    double** matrix;
-    double** cofactorMatrix;
-    double** inverse;
-    double* xSample;
-    double* xSolution;
-    double* yMatrix;
-    char* fileName;
-    double det;
-    double error;
-    int dimension;
-};
-
 void showUsage(char*);
-struct LinEq* initLinEq();
-void cleanUp(struct LinEq*);
 void print1dMatrix(double*, int);
 void print2dMatrix(double**, int, int);
 double** createDiagonalMatrix(int);
@@ -45,13 +27,18 @@ double** createRandomMatrix(int);
 int getDimensionFromFile(char*);
 double** getMatrixFromFile(char*);
 double* createRandomColumnMatrix(int);
-void appendSolutionToMatrix(struct LinEq*);
-void getSolutionFromMatrix(struct LinEq*);
 void rowReduce(double**, int);
 void swapRows(double**, int, int, int);
 void scalarMultiply(double*, double, int);
 double getError(double*, double*, int);
-void showResults(struct LinEq*);
+
+void initializeRNG()
+{
+    FILE* random_file = fopen("/dev/random", "r");
+    char random_seed = getc(random_file);
+    srand(random_seed);
+    fclose(random_file);
+}
 
 int main(int argc, char* argv[])
 {
@@ -61,41 +48,48 @@ int main(int argc, char* argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ncpu);
 
-    int opt, rFlag = 0, dFlag = 0, fFlag = 0;
-    struct LinEq* le = initLinEq();
+    double** matrix;
+    char* fileName;
+    int dimension;
 
-    while ((opt = getopt(argc, argv, "r:d:f:")) != -1)
-    {
-        switch (opt)
-        {
-            case 'r':
-                rFlag = 1;
-                le->dimension = atoi(optarg);
-                break;
-            case 'd':
-                dFlag = 1;
-                le->dimension = atoi(optarg);
-                break;
-            case 'f':
-                fFlag = 1;
-                le->fileName = optarg;
-                break;
-            case '?':
-                if (rank == 0)
-                {
-                    fprintf(stderr, "Invalid parameter '%s'\n", opt);
+    // Seeding rand() isn't necessary for every case, but seed it here once
+    // to simplify logic.
+    srand(time(NULL));
 
-                    showUsage(argv[0]);
-                    MPI_Abort(MPI_COMM_WORLD, 1);
-
-                    return 1;
-                }
-                break;
-        }
-    }
-
+    // Initialize environment.
     if (rank == 0)
     {
+        int opt, rFlag = 0, dFlag = 0, fFlag = 0;
+        while ((opt = getopt(argc, argv, "r:d:f:")) != -1)
+        {
+            switch (opt)
+            {
+                case 'r':
+                    rFlag = 1;
+                    dimension = atoi(optarg);
+                    break;
+                case 'd':
+                    dFlag = 1;
+                    dimension = atoi(optarg);
+                    break;
+                case 'f':
+                    fFlag = 1;
+                    fileName = optarg;
+                    break;
+                case '?':
+                    if (rank == 0)
+                    {
+                        fprintf(stderr, "Invalid parameter '%s'\n", opt);
+
+                        showUsage(argv[0]);
+                        MPI_Abort(MPI_COMM_WORLD, 1);
+
+                        return 1;
+                    }
+                    break;
+            }
+        }
+
         // Validate user input.
         if (rFlag == 0 && dFlag == 0 && fFlag == 0)
         {
@@ -104,7 +98,6 @@ int main(int argc, char* argv[])
 
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
-            cleanUp(le);
 
             return 1;
         }
@@ -114,75 +107,222 @@ int main(int argc, char* argv[])
 
             showUsage(argv[0]);
             MPI_Abort(MPI_COMM_WORLD, 1);
-            cleanUp(le);
 
             return 1;
         }
 
-        // Seeding rand() isn't necessary for every case, but seed it here once
-        // to simplify logic.
-        srand(time(NULL));
+        // Instantiate matrix based on user's request.
+        if (rFlag == 1)
+        {
+            matrix = createRandomMatrix(dimension);
+        }
+        else if (dFlag == 1)
+        {
+            matrix = createDiagonalMatrix(dimension);
+        }
+        else
+        {
+            matrix = getMatrixFromFile(fileName);
+            if (matrix == NULL)
+            {
+                fprintf(stderr, "Error reading from file\n");
+
+                showUsage(argv[0]);
+                MPI_Abort(MPI_COMM_WORLD, 1);
+
+                free(matrix[0]);
+                free(matrix);
+
+                return 1;
+            }
+
+            dimension = getDimensionFromFile(fileName);
+        }
+
+        // If the determinant is zero, we can't do any meaningful work.
+        double det;
+        if ((det = determinantNehrbass(matrix, 0, dimension, dimension)) == 0)
+        {
+            fprintf(stderr, "Determinant of the given matrix is 0\n");
+
+            MPI_Abort(MPI_COMM_WORLD, 1);
+
+            free(matrix[0]);
+            free(matrix);
+
+            return 1;
+        }
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // Populate matrix based on user request.
-    if (rFlag == 1)
+    // If the determinant is 0, we can't do any meaningful work.
+    int stopTask = 0, startTask = 1;
+    if (rank == 0)
     {
-        le->matrix = createRandomMatrix(le->dimension);
-    }
-    else if (dFlag == 1)
-    {
-        le->matrix = createDiagonalMatrix(le->dimension);
+        // Front load passing the given array.
+        int workersWithTask[ncpu - 1];
+        int i;
+        for (i = 1; i < ncpu; ++i)
+        {
+            workersWithTask[i - 1] = 0;
+            MPI_Send(&dimension, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+            // https://stackoverflow.com/questions/5901476/sending-and-receiving-2d-array-over-mpi
+            MPI_Send(&(matrix[0][0]), dimension * dimension, MPI_DOUBLE, i, 1,
+                     MPI_COMM_WORLD);
+        }
+
+        double cumulativeError = 0.0;
+        int numTasks = 10;
+
+        printf("[%d] Beginning work\n", rank);
+        double startTime = MPI_Wtime();
+
+        // Below is my attempt at implementing a worker-pool-like task tracker.
+        /*
+                do
+                {
+                    for (i = 1; i < ncpu; ++i)
+                    {
+                        if(numTasks == 0)
+                        {
+                            break;
+                        }
+
+                        // Send an instruction to a worker.
+                        MPI_Send(&startTask, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+
+                        workersWithTask[i-1] = 1;
+
+                       --numTasks;
+                    }
+
+                    for(i = 1; i < ncpu; ++i)
+                    {
+                        if(workersWithTask[i-1] == 1)
+                        {
+                            double error = 0.0;
+                            MPI_Recv(&error, 1, MPI_DOUBLE, i, 1,
+           MPI_COMM_WORLD, MPI_STATUS_IGNORE); cumulativeError += error;
+
+                            workersWithTask[i-1] = 0;
+                        }
+                    }
+
+                    if(numTasks < 0)
+                    {
+                        MPI_Abort(MPI_COMM_WORLD, 1);
+
+                        return 1;
+                    }
+
+                } while(numTasks != 0);
+        */
+
+        int currentNode = 1;
+        for (i = 0; i < numTasks; ++i)
+        {
+            double error = 0.0;
+            // Send an instruction to a worker.
+            MPI_Send(&startTask, 1, MPI_INT, currentNode, 1, MPI_COMM_WORLD);
+
+            MPI_Recv(&error, 1, MPI_DOUBLE, currentNode, 1, MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+            cumulativeError += error;
+
+            currentNode = (currentNode + 1) % ncpu;
+
+            // Don't assign work to self.
+            if (currentNode == 0)
+            {
+                currentNode = 1;
+            }
+        }
+
+        double endTime = MPI_Wtime();
+        printf("[%d] Work concluded, stopping workers\n", rank);
+
+        for (i = 1; i < ncpu; ++i)
+        {
+            MPI_Send(&stopTask, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+        }
+
+        printf("\n-------------------------------------------\n");
+        printf("Elapsed time: %lf\n", (endTime - startTime));
+        printf("Error: %lf", cumulativeError);
+        printf("\n-------------------------------------------\n\n");
+
+        free(matrix[0]);
+        free(matrix);
     }
     else
     {
-        le->matrix = getMatrixFromFile(le->fileName);
-        if (le->matrix == NULL)
+        MPI_Recv(&dimension, 1, MPI_INT, 0, 1, MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+
+        // https://stackoverflow.com/questions/5901476/sending-and-receiving-2d-array-over-mpi
+        matrix = create2dDoubleMatrix(dimension, dimension);
+        MPI_Recv(&(matrix[0][0]), dimension * dimension, MPI_DOUBLE, 0, 1,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        // Continue work until task master says to stop.
+        while (1)
         {
-            fprintf(stderr, "Error reading from file\n");
+            int msg;
+            MPI_Recv(&msg, 1, MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (msg == stopTask)
+            {
+                break;
+            }
 
-            showUsage(argv[0]);
-            MPI_Abort(MPI_COMM_WORLD, 1);
-            cleanUp(le);
+            printf("[%d] Starting task\n", rank);
 
-            return 1;
+            // Generate a random 'x' to solve Ax = Y.
+            double* xSample = createRandomColumnMatrix(dimension);
+
+            double* yMatrix = create1dDoubleMatrix(dimension);
+            int i;
+            for (i = 0; i < dimension; ++i)
+            {
+                yMatrix[i] = dot(matrix[i], xSample, dimension);
+            }
+
+            double** matrixWithSolution =
+                create2dDoubleMatrix(dimension, dimension + 1);
+            for (i = 0; i < dimension; ++i)
+            {
+                int j;
+                for (j = 0; j < dimension; ++j)
+                {
+                    matrixWithSolution[i][j] = matrix[i][j];
+                }
+
+                matrixWithSolution[i][dimension] = yMatrix[i];
+            }
+
+            free(yMatrix);
+
+            // Now that we have A, a sample x, and Y, we use A and Y to solve
+            // for x using back substitution.
+            rowReduce(matrixWithSolution, dimension);
+
+            double* xSolution = create1dDoubleMatrix(dimension);
+            for (i = 0; i < dimension; ++i)
+            {
+                xSolution[i] = matrixWithSolution[i][dimension];
+            }
+
+            double error = getError(xSample, xSolution, dimension);
+            MPI_Send(&error, 1, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
+
+            free(xSample);
+
+            free(matrixWithSolution[0]);
+            free(matrixWithSolution);
+
+            free(xSolution);
         }
-
-        le->dimension = getDimensionFromFile(le->fileName);
     }
-
-    // TODO: This part is parallelized.
-    // If the determinant is 0, we can't do any meaningful work.
-    if ((le->det = determinantNehrbass(le->matrix, 0, le->dimension,
-                                       le->dimension)) != 0)
-    {
-        le->cofactorMatrix = cofactor(le->matrix, le->dimension);
-
-        le->inverse = transpose(le->matrix, le->cofactorMatrix, le->dimension);
-
-        // Generate a random 'x' to solve Ax = Y.
-        le->xSample = createRandomColumnMatrix(le->dimension);
-
-        le->yMatrix = create1dDoubleMatrix(le->dimension);
-        int i;
-        for (i = 0; i < le->dimension; ++i)
-        {
-            le->yMatrix[i] = dot(le->matrix[i], le->xSample, le->dimension);
-        }
-
-        // Now that we have A, a sample x, and Y, we use A and Y to solve for x
-        // using back substitution.
-        appendSolutionToMatrix(le);
-        rowReduce(le->matrixWithSolution, le->dimension);
-        getSolutionFromMatrix(le);
-
-        le->error = getError(le->xSample, le->xSolution, le->dimension);
-    }
-
-    showResults(le);
-
-    cleanUp(le);
 
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Finalize();
@@ -199,78 +339,6 @@ void showUsage(char* applicationName)
     printf(
         "\t-f: read a matrix from a file where the first line is the square "
         "dimension and the second line contains space delimited elements\n");
-}
-
-struct LinEq* initLinEq()
-{
-    struct LinEq* le = malloc(sizeof(struct LinEq));
-    le->matrixWithSolution = NULL;
-    le->matrix = NULL;
-    le->cofactorMatrix = NULL;
-    le->inverse = NULL;
-    le->xSample = NULL;
-    le->xSolution = NULL;
-    le->yMatrix = NULL;
-    le->det = -1;
-    le->error = -1;
-    le->dimension = -1;
-
-    return le;
-}
-
-void cleanUp(struct LinEq* le)
-{
-    if (le != NULL)
-    {
-        int i;
-
-        if (le->matrix != NULL)
-        {
-            for (i = 0; i < le->dimension; ++i)
-            {
-                free(le->matrix[i]);
-            }
-
-            free(le->matrix);
-        }
-
-        if (le->cofactorMatrix != NULL)
-        {
-            for (i = 0; i < le->dimension; ++i)
-            {
-                free(le->cofactorMatrix[i]);
-            }
-
-            free(le->cofactorMatrix);
-        }
-
-        if (le->inverse != NULL)
-        {
-            for (i = 0; i < le->dimension; ++i)
-            {
-                free(le->inverse[i]);
-            }
-
-            free(le->inverse);
-        }
-
-        if (le->xSolution != NULL)
-        {
-            free(le->xSolution);
-        }
-
-        if (le->xSample != NULL)
-        {
-            free(le->xSample);
-        }
-
-        if (le->yMatrix != NULL)
-        {
-            free(le->yMatrix);
-        }
-
-        free(le);
-    }
 }
 
 void print1dMatrix(double* arr, int dimension)
@@ -301,7 +369,7 @@ void print2dMatrix(double** arr, int row, int col)
 
 double** createDiagonalMatrix(int dimension)
 {
-    double** arr = create2dDoubleMatrix(dimension);
+    double** arr = create2dDoubleMatrix(dimension, dimension);
 
     int i, j;
     for (i = 0; i < dimension; ++i)
@@ -324,7 +392,7 @@ double** createDiagonalMatrix(int dimension)
 
 double** createRandomMatrix(int dimension)
 {
-    double** arr = create2dDoubleMatrix(dimension);
+    double** arr = create2dDoubleMatrix(dimension, dimension);
 
     int i, j, ceiling = 100;
     for (i = 0; i < dimension; ++i)
@@ -367,7 +435,7 @@ double** getMatrixFromFile(char* fileName)
         assert(dimension != 0);
 
         // Next line contains matrix contents (space delimited doubles).
-        arr = create2dDoubleMatrix(dimension);
+        arr = create2dDoubleMatrix(dimension, dimension);
 
         int i, j;
         for (i = 0; i < dimension; ++i)
@@ -380,6 +448,8 @@ double** getMatrixFromFile(char* fileName)
 
         fclose(fp);
     }
+
+    printf("Returning contents from file\n");
 
     return arr;
 }
@@ -397,42 +467,6 @@ double* createRandomColumnMatrix(int dimension)
     return arr;
 }
 
-void getSolutionFromMatrix(struct LinEq* le)
-{
-    le->xSolution = create1dDoubleMatrix(le->dimension);
-    int i;
-    for (i = 0; i < le->dimension; ++i)
-    {
-        le->xSolution[i] = le->matrixWithSolution[i][le->dimension];
-    }
-}
-
-void appendSolutionToMatrix(struct LinEq* le)
-{
-    if (le != NULL && le->matrix != NULL && le->yMatrix != NULL)
-    {
-        le->matrixWithSolution =
-            (double**)malloc(le->dimension * sizeof(double*));
-        int i;
-        for (i = 0; i < le->dimension; ++i)
-        {
-            le->matrixWithSolution[i] =
-                (double*)malloc((le->dimension + 1) * sizeof(double));
-        }
-
-        for (i = 0; i < le->dimension; ++i)
-        {
-            int j;
-            for (j = 0; j < le->dimension; ++j)
-            {
-                le->matrixWithSolution[i][j] = le->matrix[i][j];
-            }
-
-            le->matrixWithSolution[i][le->dimension] = le->yMatrix[i];
-        }
-    }
-}
-
 // Pseudo-code taken from
 // https://www.rosettacode.org/wiki/Reduced_row_echelon_form.
 // I should mention that there are implementations for several languages on this
@@ -445,7 +479,7 @@ void rowReduce(double** arr, int dimension)
 
     for (r = 0; r < rowCount; ++r)
     {
-        if (columnCount <= lead)
+        if (lead >= columnCount)
         {
             return;
         }
@@ -529,50 +563,4 @@ double getError(double* a, double* b, int dimension)
     }
 
     return sqrt(sumOfSquaredDiff) / (double)dimension;
-}
-
-void showResults(struct LinEq* le)
-{
-    if (le != NULL && le->dimension != -1)
-    {
-        if (le->matrix != NULL)
-        {
-            printf("\nThe given matrix:\n");
-            print2dMatrix(le->matrix, le->dimension, le->dimension);
-        }
-
-        if (le->det != -1)
-        {
-            printf("\nDeterminant of the given matrix:\n  %.4lf\n", le->det);
-        }
-
-        if (le->inverse != NULL)
-        {
-            printf("\nThe inverse of the given matrix:\n");
-            print2dMatrix(le->inverse, le->dimension, le->dimension);
-        }
-
-        if (le->xSample != NULL)
-        {
-            printf("\nThe generated x sample:\n");
-            print1dMatrix(le->xSample, le->dimension);
-        }
-
-        if (le->yMatrix != NULL)
-        {
-            printf("\nThe computed y matrix:\n");
-            print1dMatrix(le->yMatrix, le->dimension);
-        }
-
-        if (le->xSolution != NULL)
-        {
-            printf("\nThe computed solution for Ax = Y:\n");
-            print1dMatrix(le->xSolution, le->dimension);
-        }
-
-        if (le->error != -1)
-        {
-            printf("\nThe computed error:\n  %.4lf\n", le->error);
-        }
-    }
 }

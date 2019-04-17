@@ -20,19 +20,20 @@ double* create1dDoubleMatrix(int dimension)
     return arr;
 }
 
-double** create2dDoubleMatrix(int dimension)
+// https://stackoverflow.com/questions/5901476/sending-and-receiving-2d-array-over-mpi
+// Allocate 2d array contiguously.
+double** create2dDoubleMatrix(int rows, int cols)
 {
-    double** arr = (double**)malloc(dimension * sizeof(double*));
-    assert(arr != NULL);
+    double* data = (double*)malloc(rows * cols * sizeof(double));
+    assert(data != NULL);
+
+    double** array = (double**)malloc(rows * sizeof(double*));
+    assert(array != NULL);
 
     int i;
-    for (i = 0; i < dimension; ++i)
-    {
-        arr[i] = (double*)malloc(dimension * sizeof(double));
-        assert(arr[i] != NULL);
-    }
+    for (i = 0; i < rows; i++) array[i] = &(data[cols * i]);
 
-    return arr;
+    return array;
 }
 
 // Adapted from det_recursive.c.
@@ -63,7 +64,7 @@ double determinantNehrbass(double** a, int start, int end, int dimension)
 
         for (k = start; k < end; k++)
         {
-            arr = create2dDoubleMatrix(dimension - 1);
+            arr = create2dDoubleMatrix(dimension - 1, dimension - 1);
 
             for (i = 1; i < dimension; i++)
             {
@@ -84,10 +85,7 @@ double determinantNehrbass(double** a, int start, int end, int dimension)
             det += pow(-1.0, 1.0 + k + 1.0) * a[0][k] *
                    determinantNehrbass(arr, 0, dimension - 1, dimension - 1);
 
-            for (i = 0; i < dimension - 1; i++)
-            {
-                free(arr[i]);
-            }
+            free(arr[0]);
             free(arr);
         }
     }
@@ -105,7 +103,7 @@ double determinantChamp(double** arr, float dimension)
     }
 
     float sign = 1, det = 0;
-    double** b = create2dDoubleMatrix(dimension);
+    double** b = create2dDoubleMatrix(dimension, dimension);
 
     int i;
     for (i = 0; i < dimension; i++)
@@ -160,8 +158,8 @@ double dot(double* v1, double* v2, int n)
 // http://www.ccodechamp.com/c-program-to-find-inverse-of-matrix/
 double** cofactor(double** arr, int dimension)
 {
-    double** cofactorMatrix = create2dDoubleMatrix(dimension);
-    double** minorsMatrix = create2dDoubleMatrix(dimension);
+    double** cofactorMatrix = create2dDoubleMatrix(dimension, dimension);
+    double** minorsMatrix = create2dDoubleMatrix(dimension, dimension);
 
     int i;
     for (i = 0; i < dimension; i++)
@@ -197,10 +195,7 @@ double** cofactor(double** arr, int dimension)
         }
     }
 
-    for (i = 0; i < dimension; ++i)
-    {
-        free(minorsMatrix[i]);
-    }
+    free(minorsMatrix[0]);
     free(minorsMatrix);
 
     return cofactorMatrix;
@@ -211,7 +206,7 @@ double** cofactor(double** arr, int dimension)
 double** transpose(double** arr, double** fac, int dimension)
 {
     double b[25][25], det;
-    double** inverse = create2dDoubleMatrix(dimension);
+    double** inverse = create2dDoubleMatrix(dimension, dimension);
 
     int i, j;
     for (i = 0; i < dimension; i++)
